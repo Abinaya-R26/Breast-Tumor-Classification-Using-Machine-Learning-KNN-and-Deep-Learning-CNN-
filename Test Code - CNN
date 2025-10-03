@@ -1,0 +1,61 @@
+%% Classification
+[Predicted_Label, Probability] = classify(net, Resized_Testing_Dataset);
+trueLabels = Testing_Dataset.Labels;
+
+%% Accuracy
+accuracy = mean(Predicted_Label == trueLabels);
+fprintf('Overall Accuracy: %.2f%%\n', accuracy * 100);
+
+%% Display 4 random test images with predictions
+index = randperm(numel(Resized_Testing_Dataset.Files), 4);
+figure('Name', 'Sample Predictions', 'NumberTitle', 'off');
+
+for i = 1:4
+    subplot(2, 2, i)
+    I = readimage(Testing_Dataset, index(i));
+    imshow(I)
+    label = Predicted_Label(index(i));
+    prob = 100 * max(Probability(index(i), :));
+    title(sprintf('%s, %.2f%%', string(label), prob), 'FontSize', 10);
+end
+
+%% Confusion matrix
+[C, order] = confusionmat(trueLabels, Predicted_Label);
+
+% Sensitivity & Specificity (overall)
+numClasses = numel(order);
+sens_per_class = zeros(numClasses, 1);
+spec_per_class = zeros(numClasses, 1);
+
+for i = 1:numClasses
+    TP = C(i, i);
+    FN = sum(C(i, :)) - TP;
+    FP = sum(C(:, i)) - TP;
+    TN = sum(C(:)) - TP - FP - FN;
+
+    sens_per_class(i) = TP / (TP + FN);
+    spec_per_class(i) = TN / (TN + FP);
+end
+
+overall_sensitivity = mean(sens_per_class);
+overall_specificity = mean(spec_per_class);
+
+fprintf('Overall Sensitivity: %.2f%%\n', overall_sensitivity * 100);
+fprintf('Overall Specificity: %.2f%%\n', overall_specificity * 100);
+
+%% Display confusion matrix chart
+figure('Name', 'Confusion Matrix', 'NumberTitle', 'off');
+cmChart = confusionchart(trueLabels, Predicted_Label);
+cmChart.Title = 'Confusion Matrix';
+cmChart.RowSummary = 'row-normalized';
+cmChart.ColumnSummary = 'column-normalized';
+
+%% 3D Histogram of confusion matrix
+figure('Name', '3D Histogram of Confusion Matrix', 'NumberTitle', 'off');
+bar3(C);
+set(gca, 'XTickLabel', order, 'YTickLabel', order);
+xlabel('Predicted Class');
+ylabel('True Class');
+zlabel('Count');
+title('3D Histogram of Confusion Matrix');
+colorbar;

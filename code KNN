@@ -1,0 +1,244 @@
+clc;
+clear;
+close all;
+
+%% Paths
+imageDir = 'C:\Users\rvabi\OneDrive\Documents\MATLAB\dataset\images';
+maskDir  = 'C:\Users\rvabi\OneDrive\Documents\MATLAB\dataset\masks';
+
+%% Load images and masks
+imds = imageDatastore(imageDir, ...
+    'IncludeSubfolders', true, ...
+    'LabelSource', 'foldernames', ...
+    'FileExtensions', {'.png','.jpg','.jpeg','.bmp'});
+
+maskds = imageDatastore(maskDir, ...
+    'IncludeSubfolders', true, ...
+    'LabelSource', 'foldernames', ...
+    'FileExtensions', {'.png','.jpg','.jpeg','.bmp'});
+
+% Check counts
+if numel(imds.Files) ~= numel(maskds.Files)
+    error('Number of images and masks do not match.');
+end
+
+N = numel(imds.Files);
+features = [];
+labels = strings(N,1);
+roiImages = cell(N,1);
+maskedImages = cell(N,1);
+originalImages = cell(N,1);
+
+%% Feature extraction loop
+for i = 1:N
+    
+    % Read image and mask
+    I = readimage(imds, i);
+    M = readimage(maskds, i);
+    
+    % Store original for display
+    originalImages{i} = I;
+    
+    % Convert to grayscale
+    if size(I, 3) == 3
+        Igray = rgb2gray(I);
+    else
+        Igray = I;
+    end
+    if size(M, 3) == 3
+        Mgray = rgb2gray(M);
+    else
+        Mgray = M;
+    end
+    
+    % Binary mask
+    Mbin = imbinarize(Mgray);
+    maskedImages{i} = Mbin; % store mask
+    
+    % ROI extraction (mask applied on grayscale)
+    ROI = Igray;
+    ROI(~Mbin) = 0;
+    roiImages{i} = ROI;
+    
+    % Extract GLCM texture features on ROI
+    glcm = graycomatrix(ROI, 'Offset', [0 1]);
+    stats = graycoprops(glcm, {'Contrast','Correlation','Energy','Homogeneity'});
+    feat = [stats.Contrast, stats.Correlation, stats.Energy, stats.Homogeneity];
+    
+    features = [features; feat];
+    labels(i) = string(imds.Labels(i));
+end
+
+%% Train-Test Split
+cv = cvpartition(labels, 'HoldOut', 0.3);
+Xtrain = features(training(cv), :);
+Ytrain = labels(training(cv));
+Xtest  = features(test(cv), :);
+Ytest  = labels(test(cv));
+originalTestImages = originalImages(test(cv));
+maskedTestImages = maskedImages(test(cv));
+roiTestImages = roiImages(test(cv));
+
+%% Train KNN Classifier
+knnModel = fitcknn(Xtrain, Ytrain, 'NumNeighbors', 3);
+
+%% Predict on test set ONLY
+Ypred = predict(knnModel, Xtest);
+
+%% Predict on ALL images for display
+Ypred_all = predict(knnModel, features);
+
+%% Metrics calculation
+accuracy = sum(Ypred == Ytest) / numel(Ytest);
+fprintf('Accuracy: %.2f%%\n', accuracy*100);
+
+% Convert to categorical for confusion matrix
+Ytest_cat = categorical(Ytest);
+Ypred_cat = categorical(Ypred);
+
+confMat = confusionmat(Ytest_cat, Ypred_cat);
+disp('Confusion Matrix:');
+disp(confMat);
+
+% Calculate Sensitivity, Specificity, F1 Score per class
+classes = categories(Ytest_cat);
+numClasses = numel(classes);
+
+sensitivities = zeros(numClasses,1);
+specificities = zeros(numClasses,1);
+f1scores = zeros(numClasses,1);
+
+for c = 1:numClasses
+    TP = confMat(c,c);
+    FN = sum(confMat(c,:)) - TP;
+    FP = sum(confMat(:,c)) - TP;
+    TN = sum(confMat(:)) - (TP + FP + FN);
+
+    sensitivity = TP / (TP + FN);
+    specificity = TN / (TN + FP);
+    precision = TP / (TP + FP);
+    recall = sensitivity;
+    f1 = 2 * (precision * recall) / (precision + recall);
+
+    sensitivities(c) = sensitivity;
+    specificities(c) = specificity;
+    f1scores(c) = f1;
+    
+    fprintf('Class %s: Sensitivity=%.2f%%, Specificity=%.2f%%, F1 Score=%.2f%%\n', ...
+        classes{c}, sensitivity*100, specificity*100, f1*100);
+end
+
+
+%% %% Display all Original images with true labels
+figure('Name','Original Images with True Labels','NumberTitle','off','Units','normalized','Position',[0 0 1 1]);
+for i = 1:N
+    cols = 6;
+    rows = ceil(N / cols);
+    subplot(rows, cols, i);
+    imshow(originalImages{i},[]);
+    title(char(labels(i)),'Interpreter','none','FontSize',8);
+    axis off;
+end
+sgtitle('Original Images with True Labels');
+
+%% Display all Masked images with true labels
+figure('Name','Masked Images with True Labels','NumberTitle','off','Units','normalized','Position',[0 0 1 1]);
+for i = 1:N
+    subplot(rows, cols, i);
+    imshow(maskedImages{i});
+    title(char(labels(i)),'Interpreter','none','FontSize',8);
+    axis off;
+end
+sgtitle('Masked Images with True Labels');
+
+%% Display all ROI images with true labels
+figure('Name','ROI Images with True Labels','NumberTitle','off','Units','normalized','Position',[0 0 1 1]);
+for i = 1:N
+    subplot(rows, cols, i);
+    imshow(roiImages{i},[]);
+    title(char(labels(i)),'Interpreter','none','FontSize',8);
+    axis off;
+end
+sgtitle('ROI Images with True Labels');
+figure('Name','All Images with Predicted Labels and Tumor Mask Overlay','NumberTitle','off','Units','normalized','Position',[0 0 1 1]);
+cols = 6;
+rows = ceil(N / cols);
+
+for i = 1:N
+    subplot(rows, cols, i);
+    
+    I = originalImages{i};
+    predLabel = char(Ypred_all(i));
+    
+    % Show original image as RGB (convert if grayscale)
+    if size(I,3) == 1
+        I = repmat(I, [1 1 3]);
+    end
+    
+    imshow(I, []);
+    hold on;
+    
+    if strcmpi(predLabel, 'benign') || strcmpi(predLabel, 'malignant')
+        % Get mask (binary)
+        M = maskedImages{i};
+        
+        % Create red overlay for mask region
+        redOverlay = cat(3, ones(size(M)), zeros(size(M)), zeros(size(M))); % Red color
+        
+        % Use 'imshow' with 'AlphaData' to overlay mask transparently
+        h = imshow(redOverlay);
+        set(h, 'AlphaData', 0.4 * M);  % 40% transparency only where mask is true
+    end
+    
+    hold off;
+    title(sprintf('Pred: %s', predLabel), 'Interpreter', 'none', 'FontSize', 8);
+    axis off;
+end
+sgtitle('All Images with Predicted Labels and Tumor Mask Overlay');
+
+
+
+%% Display all Test images with predicted labels
+figure('Name','Test Images with Predicted Labels','NumberTitle','off','Units','normalized','Position',[0 0 1 1]);
+numTest = numel(Ytest);
+colsTest = 6;
+rowsTest = ceil(numTest / colsTest);
+for i = 1:numTest
+    subplot(rowsTest, colsTest, i);
+    imshow(originalTestImages{i},[]);
+    title(sprintf('Pred: %s', char(Ypred(i))),'Interpreter','none','FontSize',8);
+    axis off;
+end
+sgtitle('Test Images with Predicted Labels');
+
+% Display confusion matrix as image
+figure('Name','Confusion Matrix','NumberTitle','off');
+confusionchart(Ytest_cat, Ypred_cat);
+title('Confusion Matrix');
+
+%% 3D Histogram of Confusion Matrix
+figure('Name','3D Histogram of Confusion Matrix','NumberTitle','off');
+
+% Create a bar3 plot
+bar3(confMat);
+
+% Label axes
+set(gca, 'XTickLabel', classes, 'YTickLabel', classes);
+xlabel('Predicted Class');
+ylabel('True Class');
+zlabel('Count');
+title('3D Histogram of Confusion Matrix');
+
+% Add value labels on top of each bar
+for i = 1:size(confMat,1)
+    for j = 1:size(confMat,2)
+        val = confMat(i,j);
+        if val ~= 0
+            text(j, i, val + 0.2, num2str(val), ...
+                'HorizontalAlignment', 'center', 'FontSize', 10, 'Color', 'k');
+        end
+    end
+end
+
+colormap(parula); % Color scheme
+colorbar;
